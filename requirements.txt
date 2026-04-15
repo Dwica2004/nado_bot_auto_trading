@@ -1,0 +1,21 @@
+# Nado Scalping Bot — Python dependencies
+
+# Nado order signing & Web3
+eth-account>=0.13.0
+eth-abi>=5.0.0
+
+# Async HTTP & WebSocket
+aiohttp>=3.10.0
+websockets>=13.0
+
+# Technical analysis (from trading_skills)
+yfinance>=0.2.50
+pandas>=2.2.0
+pandas-ta>=0.3.14b0
+numpy>=2.0.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Optional: use trading_skills package for extended analysis
+# trading-skills @ git+https://github.com/staskh/trading_skills.git

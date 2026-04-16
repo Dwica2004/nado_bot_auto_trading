@@ -39,16 +39,30 @@ log = logging.getLogger("scanner")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SCAN_INTERVAL       = 60    # detik antar scan
-RISK_PCT            = 0.25  # 25% saldo per trade (notional sebelum leverage)
-MIN_SCORE           = 2     # min score 2/5 untuk entry
+RISK_PCT            = 0.25  # 25% saldo per trade
+MIN_SCORE           = 3     # ✅ UPGRADED: min score 3/7 (kualitas lebih baik)
 MAX_POSITIONS       = 2     # jumlah posisi simultan maksimal
 
 # Software Isolated Margin
-ISOLATED_MARGIN_PCT = 0.15  # 15% saldo per posisi (hemat untuk multi-posisi)
+ISOLATED_MARGIN_PCT = 0.15  # 15% saldo per posisi
 ISOLATED_MAX_LEV    = 20    # max leverage software
 MIN_NOTIONAL_USD    = 100   # minimum notional Nado ($100)
 
-# Coin yang di-skip (tidak ada di yfinance atau terlalu exotic)
+# ── Scalping Mode ─────────────────────────────────────────────────────────────
+# TP/SL lebih ketat untuk scalping cepat
+SCALP_TP1_ATR       = 0.8   # TP1 di 0.8x ATR (ambil 50% profit cepat)
+SCALP_TP2_ATR       = 1.5   # TP2 di 1.5x ATR (close semua)
+SCALP_SL_ATR        = 0.8   # SL di 0.8x ATR (tight stop)
+SCALP_TRAIL_PCT     = 0.008 # Trailing SL geser setiap 0.8% profit
+SCALP_BE_PCT        = 0.005 # Break-even aktif saat profit +0.5%
+SCALP_EARLY_RSI_L   = 70    # Early exit LONG jika RSI > 70
+SCALP_EARLY_RSI_S   = 30    # Early exit SHORT jika RSI < 30
+
+# ── Whitelist Pair (scalping: hanya pair liquid) ───────────────────────────────
+# Set kosong = scan semua; Set berisi = hanya scan pair ini
+WHITELIST_PAIRS = {"BTC", "ETH", "SOL", "XRP"}
+
+# Coin yang di-skip (tidak ada di yfinance atau market blocked)
 SKIP_SYMBOLS = {
     "KPEPE", "KBONK", "WLFI", "USELESS", "PUMP", "SKR",
     "VIRTUAL", "BERA", "PENGU", "HYPE", "SUI", "UNI",
@@ -59,9 +73,9 @@ SKIP_SYMBOLS = {
 }
 
 # Coin prioritas scan duluan
-PRIORITY = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "DOGE"]
+PRIORITY = ["BTC", "ETH", "SOL", "XRP"]
 
-# News scraper interval (setiap 5 menit, berjalan di background)
+# News scraper interval
 NEWS_REFRESH_INTERVAL = 300  # detik
 
 
@@ -247,6 +261,9 @@ class ScannerBot:
                 continue
             base = sym.replace("-PERP", "")
             if base in SKIP_SYMBOLS:
+                continue
+            # ✅ Whitelist filter: hanya scan pair yang ada di WHITELIST_PAIRS
+            if WHITELIST_PAIRS and base not in WHITELIST_PAIRS:
                 continue
 
             oracle_x18 = int(p.get("oracle_price_x18", 0))
@@ -502,13 +519,13 @@ class ScannerBot:
         signed_amt = amount_x18 * direction
 
         if side == "LONG":
-            sl  = entry_price - final_sl_dist
-            tp1 = entry_price + 1.5 * atr
-            tp  = entry_price + 3.0 * atr
+            sl  = entry_price - min(SCALP_SL_ATR * atr, entry_price * 0.015)
+            tp1 = entry_price + SCALP_TP1_ATR * atr
+            tp  = entry_price + SCALP_TP2_ATR * atr
         else:
-            sl  = entry_price + final_sl_dist
-            tp1 = entry_price - 1.5 * atr
-            tp  = entry_price - 3.0 * atr
+            sl  = entry_price + min(SCALP_SL_ATR * atr, entry_price * 0.015)
+            tp1 = entry_price - SCALP_TP1_ATR * atr
+            tp  = entry_price - SCALP_TP2_ATR * atr
 
         log.info(f"\n>>> SIGNAL: {info['symbol']} {side} | "
                  f"score={best['score']}/7 | RSI={best['rsi']:.1f} | "
@@ -612,14 +629,16 @@ class ScannerBot:
         trail_sl = (pos["peak_price"] * 0.985 if side == "LONG"
                     else pos["peak_price"] * 1.015)
 
-        # Break-even at +1%
-        if pnl_pct >= 1.0 and not pos.get("at_breakeven"):
-            pos["sl"]          = entry
+        # Break-even at +0.5% (scalping: lebih cepat aktif)
+        if pnl_pct >= SCALP_BE_PCT * 100 and not pos.get("at_breakeven"):
+            pos["sl"]           = entry
             pos["at_breakeven"] = True
-            log.info(f"  ✅ [BREAK-EVEN] {pos['symbol']} SL → entry ${entry:.4f}")
+            log.info(f"  ✅ [BREAK-EVEN] {pos['symbol']} SL → entry ${entry:.4f} (profit {pnl_pct:+.2f}%)")
 
-        # Trailing setelah break-even
+        # Trailing SL (geser tiap SCALP_TRAIL_PCT dari peak)
         if pos.get("at_breakeven"):
+            trail_sl = (pos["peak_price"] * (1 - SCALP_TRAIL_PCT) if side == "LONG"
+                        else pos["peak_price"] * (1 + SCALP_TRAIL_PCT))
             if side == "LONG":
                 pos["sl"] = max(pos["sl"], trail_sl)
             else:
@@ -679,20 +698,20 @@ class ScannerBot:
             await self._do_close(pid, pos["price_tick"], pos["amount_x18"], side, "TAKE PROFIT")
             return
 
-        # 📉 Early exit: RSI extreme + sudah profit
-        if pnl > 0 and time.time() - pos.get("opened_at", 0) > 300:
+        # 📉 Early exit (scalping): RSI extreme + sudah profit (threshold lebih ketat)
+        if pnl > 0 and time.time() - pos.get("opened_at", 0) > 180:
             try:
                 info_p = self.products.get(pid, {})
                 df_e   = yf.Ticker(info_p.get("yf_sym", "")).history(
                     period="1d", interval="5m")
                 if not df_e.empty and len(df_e) >= 14:
                     rsi_e = calc_rsi(df_e["Close"], 14)
-                    if side == "LONG" and rsi_e > 75:
-                        log.info(f"  📉 [EARLY EXIT] RSI={rsi_e:.0f} overbought | {pos['symbol']} +${pnl:.4f}")
+                    if side == "LONG" and rsi_e > SCALP_EARLY_RSI_L:
+                        log.info(f"  📉 [EARLY EXIT] RSI={rsi_e:.0f}>{SCALP_EARLY_RSI_L} | {pos['symbol']} +${pnl:.4f}")
                         await self._do_close(pid, pos["price_tick"], pos["amount_x18"],
                                              side, f"RSI OVERBOUGHT {rsi_e:.0f}")
-                    elif side == "SHORT" and rsi_e < 25:
-                        log.info(f"  📈 [EARLY EXIT] RSI={rsi_e:.0f} oversold | {pos['symbol']} +${pnl:.4f}")
+                    elif side == "SHORT" and rsi_e < SCALP_EARLY_RSI_S:
+                        log.info(f"  📈 [EARLY EXIT] RSI={rsi_e:.0f}<{SCALP_EARLY_RSI_S} | {pos['symbol']} +${pnl:.4f}")
                         await self._do_close(pid, pos["price_tick"], pos["amount_x18"],
                                              side, f"RSI OVERSOLD {rsi_e:.0f}")
             except Exception:

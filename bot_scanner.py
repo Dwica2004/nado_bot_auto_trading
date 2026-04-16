@@ -104,22 +104,42 @@ def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
     tr = pd.concat([hi-lo, (hi-cl).abs(), (lo-cl).abs()], axis=1).max(axis=1)
     return float(tr.mean())
 
+def calc_adx(df: pd.DataFrame, period: int = 14) -> float:
+    """Average Directional Index — mengukur kekuatan trend (>20 = trending, <20 = ranging)."""
+    try:
+        hi = df["High"]; lo = df["Low"]; cl = df["Close"]
+        plus_dm  = hi.diff().clip(lower=0)
+        minus_dm = (-lo.diff()).clip(lower=0)
+        # When plus_dm > minus_dm, use plus_dm, else 0
+        plus_dm  = plus_dm.where(plus_dm > minus_dm, 0)
+        minus_dm = minus_dm.where(minus_dm > plus_dm.shift(1).fillna(0), 0)
+        tr = pd.concat([hi-lo, (hi-cl.shift()).abs(), (lo-cl.shift()).abs()], axis=1).max(axis=1)
+        atr14   = tr.rolling(period).mean()
+        plus_di  = 100 * (plus_dm.rolling(period).mean()  / atr14.replace(0, np.nan))
+        minus_di = 100 * (minus_dm.rolling(period).mean() / atr14.replace(0, np.nan))
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+        return float(dx.rolling(period).mean().iloc[-1])
+    except Exception:
+        return 25.0  # default: assume trending if calc fails
+
 
 def score_pair(df: pd.DataFrame, price: float,
                news_sentiment: str = "neutral",
                news_score: float = 0.0,
                coin_sentiment: str = "neutral") -> dict:
     """
-    Score LONG vs SHORT 0–5 berdasarkan:
-    RSI < 35  -> LONG +2  |  RSI > 65  -> SHORT +2
-    RSI 35-45 -> LONG +1  |  RSI 55-65 -> SHORT +1
+    Score LONG vs SHORT 0-7:
+    RSI < 35 -> LONG +2  | RSI > 65 -> SHORT +2
+    RSI 35-45 -> LONG +1 | RSI 55-65 -> SHORT +1
     EMA9 > EMA21 -> LONG +1 | EMA9 < EMA21 -> SHORT +1
-    Vol spike + momentum arah -> +1
-    Price vs EMA50 + momentum -> +1
-    NEWS (global/coin-specific) -> ±1 boost
+    Vol spike + momentum -> +1
+    Price vs EMA50 -> +1
+    NEWS -> +/-1 or +/-2
+    ADX: returned for filtering (tidak mempengaruhi score)
     """
     if len(df) < 30:
-        return {"score": 0, "side": "NEUTRAL", "rsi": 50.0, "trend": "neutral", "atr": 0}
+        return {"score": 0, "side": "NEUTRAL", "rsi": 50.0, "trend": "neutral",
+                "atr": 0, "adx": 0, "swing_high": price, "swing_low": price}
 
     closes = df["Close"]
     rsi    = calc_rsi(closes, 14)
@@ -127,6 +147,11 @@ def score_pair(df: pd.DataFrame, price: float,
     ema21  = calc_ema(closes, 21)
     ema50  = calc_ema(closes, 50) if len(df) >= 50 else ema21
     atr    = calc_atr(df, 14)
+    adx    = calc_adx(df, 14)
+
+    # Swing levels: last 20 candles
+    swing_high = float(df["High"].tail(20).max())
+    swing_low  = float(df["Low"].tail(20).min())
 
     avg_vol   = df["Volume"].rolling(20).mean().iloc[-1]
     last_vol  = df["Volume"].iloc[-1]
@@ -172,22 +197,24 @@ def score_pair(df: pd.DataFrame, price: float,
 
     trend = "bullish" if ema_bull else ("bearish" if ema_bear else "neutral")
 
+    base_result = {"rsi": rsi, "trend": trend, "atr": atr,
+                   "adx": adx, "swing_high": swing_high, "swing_low": swing_low}
     if ls > ss:
-        return {"score": ls,  "side": "LONG",    "rsi": rsi, "trend": trend, "atr": atr}
+        return {"score": ls, "side": "LONG",  **base_result}
     elif ss > ls:
-        return {"score": ss,  "side": "SHORT",   "rsi": rsi, "trend": trend, "atr": atr}
+        return {"score": ss, "side": "SHORT", **base_result}
     else:
         side = "LONG" if ema_bull else ("SHORT" if ema_bear else "NEUTRAL")
-        return {"score": ls,  "side": side,      "rsi": rsi, "trend": trend, "atr": atr}
+        return {"score": ls, "side": side,    **base_result}
 
 
 # ── Order Execution ───────────────────────────────────────────────────────────
 
 async def place_order_raw(rest: NadoRestClient, pid: int,
-                          price_x18: int, amount_x18: int) -> dict:
-    expiration   = int(time.time()) + 300
-    nonce        = generate_nonce()
-    appendix     = 1
+                          price_x18: int, amount_x18: int,
+                          appendix: int = 1,
+                          expiry_seconds: int = 300) -> dict:
+    expiration   = int(time.time()) + expiry_seconds
 
     sender_bytes = build_sender(WALLET_ADDRESS, SUBACCOUNT)
     sender_hex   = "0x" + sender_bytes.hex()
@@ -440,6 +467,11 @@ class ScannerBot:
                 # Skip coin yang sudah ada posisinya
                 if pid in self.positions:
                     continue
+                # ADX filter: skip ranging market (ADX < 18)
+                adx_val = result.get("adx", 25)
+                if adx_val < 18:
+                    log.info(f"  ⏭  {info['base']:8s} | SKIP — ADX={adx_val:.1f} (ranging market)")
+                    continue
                 candidates.append({**result, "pid": pid, "df": df, "info": info,
                                    "coin_sent": coin_sent})
 
@@ -518,26 +550,46 @@ class ScannerBot:
         direction  = 1 if side == "LONG" else -1
         signed_amt = amount_x18 * direction
 
+        # ── Smart SL: Swing High/Low + ATR buffer ────────────────────────────
+        swing_high = best.get("swing_high", entry_price * 1.02)
+        swing_low  = best.get("swing_low",  entry_price * 0.98)
+
         if side == "LONG":
-            sl  = entry_price - min(SCALP_SL_ATR * atr, entry_price * 0.015)
-            tp1 = entry_price + SCALP_TP1_ATR * atr
-            tp  = entry_price + SCALP_TP2_ATR * atr
+            # SL = swing low - 0.1% buffer (dibawah support)
+            raw_sl   = swing_low * 0.999
+            sl_dist  = entry_price - raw_sl
+            # Clamp: min 0.5x ATR (tidak terlalu tight), max 2.0x ATR (tidak terlalu wide)
+            sl_dist  = min(max(sl_dist, 0.5 * atr), 2.0 * atr)
+            # Also cap at 2% of price
+            sl_dist  = min(sl_dist, entry_price * 0.02)
+            sl  = entry_price - sl_dist
+            # TP dengan R:R minimum 1:1.2 (TP1) dan 1:2 (TP2)
+            tp1 = entry_price + sl_dist * 1.2
+            tp  = entry_price + sl_dist * 2.0
         else:
-            sl  = entry_price + min(SCALP_SL_ATR * atr, entry_price * 0.015)
-            tp1 = entry_price - SCALP_TP1_ATR * atr
-            tp  = entry_price - SCALP_TP2_ATR * atr
+            # SL = swing high + 0.1% buffer (di atas resistance)
+            raw_sl   = swing_high * 1.001
+            sl_dist  = raw_sl - entry_price
+            sl_dist  = min(max(sl_dist, 0.5 * atr), 2.0 * atr)
+            sl_dist  = min(sl_dist, entry_price * 0.02)
+            sl  = entry_price + sl_dist
+            tp1 = entry_price - sl_dist * 1.2
+            tp  = entry_price - sl_dist * 2.0
+
+        rr_ratio = 2.0  # R:R selalu 1:2
 
         log.info(f"\n>>> SIGNAL: {info['symbol']} {side} | "
-                 f"score={best['score']}/7 | RSI={best['rsi']:.1f} | "
+                 f"score={best['score']}/7 | RSI={best['rsi']:.1f} | ADX={best.get('adx',0):.1f} | "
                  f"lev={actual_lev:.1f}x [ISOLATED ${isolated_margin:.2f}]")
         if best.get("coin_sent", "neutral") != "neutral":
-            log.info(f"    📰 Coin news: {best['coin_sent'].upper()}")
+            log.info(f"    Coin news: {best['coin_sent'].upper()}")
         log.info(f"    Global news: {global_sentiment.upper()} ({global_score:+.2f})")
         log.info(f"    {amount_abs:.4f} {info['base']} @ ${entry_price:.4f} "
-                 f"| notional ${actual_not:.2f} | isolated_margin ${isolated_margin:.2f}")
-        log.info(f"    SL=${sl:.4f} ({((sl-entry_price)/entry_price*100):+.2f}%) | "
-                 f"TP1=${tp1:.4f} | TP2=${tp:.4f} | ATR={atr:.4f}")
-        log.info(f"    Max loss = ${isolated_margin:.2f} (isolated budget)")
+                 f"| notional ${actual_not:.2f} | margin ${isolated_margin:.2f}")
+        log.info(f"    SL=${sl:.4f} ({((sl-entry_price)/entry_price*100):+.2f}%) [Swing] | "
+                 f"TP1=${tp1:.4f} ({((tp1-entry_price)/entry_price*100):+.2f}%) | "
+                 f"TP2=${tp:.4f} ({((tp-entry_price)/entry_price*100):+.2f}%) | R:R=1:{rr_ratio:.1f}")
+        log.info(f"    Max loss = ${isolated_margin:.2f} | ATR={atr:.4f} | Swing SL/TP method")
 
         try:
             result = await place_order_raw(self.rest, pid, oracle_rounded, signed_amt)
@@ -552,14 +604,63 @@ class ScannerBot:
                 "opened_at":  time.time(),
                 "peak_price": entry_price,
                 "digest": digest,
-                # Isolated margin tracking
                 "isolated_margin": isolated_margin,
-                "max_loss_usd":    isolated_margin,   # hard cap
+                "max_loss_usd":    isolated_margin,
             }
             log.info(f"    [ISOLATED MODE] Max loss hard-capped at ${isolated_margin:.2f} "
                      f"| Posisi aktif: {len(self.positions)}/{MAX_POSITIONS}")
+            # Place TP limit order langsung ke exchange (muncul di Nado UI)
+            await self._place_tp_on_exchange(pid, tp, tp1, amount_x18, side,
+                                              price_tick, size_tick)
         except Exception as e:
-            log.error(f"    ❌ Order failed: {e}")
+            log.error(f"    Order failed: {e}")
+
+    async def _place_tp_on_exchange(self, pid: int, tp: float, tp1: float,
+                                     amount_x18: int, side: str,
+                                     price_tick: int, size_tick: int):
+        """
+        Place TP limit order langsung ke Nado exchange.
+        - Reduce-only (appendix bit 2 set = 4) → hanya close posisi
+        - Expiry 24 jam → muncul di Nado UI
+        - Untuk SHORT: BUY LIMIT di bawah (TP price low)
+        - Untuk LONG:  SELL LIMIT di atas (TP price high)
+        """
+        try:
+            close_dir = -1 if side == "LONG" else 1
+
+            # TP1 (50%)
+            half    = (amount_x18 // 2 // size_tick) * size_tick
+            if half > 0:
+                if side == "LONG":
+                    tp1_x18 = ceil_tick(int(tp1 * 1e18), price_tick)
+                else:
+                    tp1_x18 = floor_tick(int(tp1 * 1e18), price_tick)
+                close_half = half * close_dir
+                r1 = await place_order_raw(
+                    self.rest, pid, tp1_x18, close_half,
+                    appendix=4, expiry_seconds=86400  # reduce-only, 24h
+                )
+                log.info(f"    [TP1 LIMIT] Placed @ ${tp1:.4f} | half={half/1e18:.4f} | "
+                         f"digest={r1.get('digest','?')}")
+
+            # TP2 (100% sisa)
+            rest_amt = (amount_x18 // size_tick) * size_tick - half
+            if rest_amt > 0:
+                if side == "LONG":
+                    tp2_x18 = ceil_tick(int(tp * 1e18), price_tick)
+                else:
+                    tp2_x18 = floor_tick(int(tp * 1e18), price_tick)
+                close_rest = rest_amt * close_dir
+                r2 = await place_order_raw(
+                    self.rest, pid, tp2_x18, close_rest,
+                    appendix=4, expiry_seconds=86400
+                )
+                log.info(f"    [TP2 LIMIT] Placed @ ${tp:.4f} | rest={rest_amt/1e18:.4f} | "
+                         f"digest={r2.get('digest','?')}")
+
+            log.info(f"    [TP ORDERS] Sekarang terlihat di Nado UI!")
+        except Exception as e:
+            log.warning(f"    [TP ORDER] Gagal place limit TP: {e} — SL/TP tetap via software")
 
     # ── Position Monitoring ───────────────────────────────────────────────────
 
@@ -698,7 +799,7 @@ class ScannerBot:
             await self._do_close(pid, pos["price_tick"], pos["amount_x18"], side, "TAKE PROFIT")
             return
 
-        # 📉 Early exit (scalping): RSI extreme + sudah profit (threshold lebih ketat)
+        # Early exit (scalping): RSI extreme + sudah profit
         if pnl > 0 and time.time() - pos.get("opened_at", 0) > 180:
             try:
                 info_p = self.products.get(pid, {})
@@ -707,11 +808,11 @@ class ScannerBot:
                 if not df_e.empty and len(df_e) >= 14:
                     rsi_e = calc_rsi(df_e["Close"], 14)
                     if side == "LONG" and rsi_e > SCALP_EARLY_RSI_L:
-                        log.info(f"  📉 [EARLY EXIT] RSI={rsi_e:.0f}>{SCALP_EARLY_RSI_L} | {pos['symbol']} +${pnl:.4f}")
+                        log.info(f"  [EARLY EXIT] RSI={rsi_e:.0f}>{SCALP_EARLY_RSI_L} | {pos['symbol']} +${pnl:.4f}")
                         await self._do_close(pid, pos["price_tick"], pos["amount_x18"],
                                              side, f"RSI OVERBOUGHT {rsi_e:.0f}")
                     elif side == "SHORT" and rsi_e < SCALP_EARLY_RSI_S:
-                        log.info(f"  📈 [EARLY EXIT] RSI={rsi_e:.0f}<{SCALP_EARLY_RSI_S} | {pos['symbol']} +${pnl:.4f}")
+                        log.info(f"  [EARLY EXIT] RSI={rsi_e:.0f}<{SCALP_EARLY_RSI_S} | {pos['symbol']} +${pnl:.4f}")
                         await self._do_close(pid, pos["price_tick"], pos["amount_x18"],
                                              side, f"RSI OVERSOLD {rsi_e:.0f}")
             except Exception:
@@ -721,7 +822,6 @@ class ScannerBot:
                         amount_x18: int, side: str, reason: str,
                         partial: bool = False):
         try:
-            # Get current oracle price
             all_p = await self.rest.query({"type": "all_products"})
             cur = 0
             for p in all_p.get("perp_products", []):
@@ -729,10 +829,8 @@ class ScannerBot:
                     cur = int(p.get("oracle_price_x18", 0))
                     break
             oracle_rounded = floor_tick(cur, price_tick)
-
             close_dir = -1 if side == "LONG" else 1
             close_amt = amount_x18 * close_dir
-
             await place_order_raw(self.rest, pid, oracle_rounded, close_amt)
             log.info(f"  [{reason}] {'Partial' if partial else 'Full'} close OK")
         except Exception as e:
@@ -746,46 +844,49 @@ class ScannerBot:
 
     async def run(self):
         log.info("=" * 60)
-        log.info("  🤖 Nado Multi-Pair Scanner Bot v2")
+        log.info("  Nado Scalping Bot v3 - Smart SL/TP")
         log.info(f"  Wallet : {WALLET_ADDRESS}")
         log.info(f"  Gateway: {GATEWAY}")
-        log.info(f"  Mode   : SOFTWARE ISOLATED MARGIN")
-        log.info(f"  Margin : {ISOLATED_MARGIN_PCT*100:.0f}% saldo per posisi | Max lev {ISOLATED_MAX_LEV}x")
-        log.info(f"  Max posisi simultan: {MAX_POSITIONS}")
-        log.info(f"  Min score: {MIN_SCORE}/7 | Min notional: ${MIN_NOTIONAL_USD:.0f}")
+        log.info(f"  Pairs  : {list(WHITELIST_PAIRS)}")
+        log.info(f"  Mode   : ISOLATED MARGIN + EXCHANGE TP ORDER")
+        log.info(f"  Margin : {ISOLATED_MARGIN_PCT*100:.0f}% per posisi | Max lev {ISOLATED_MAX_LEV}x")
+        log.info(f"  Max posisi: {MAX_POSITIONS} | Min score: {MIN_SCORE}/7")
+        log.info(f"  Monitor: tiap {MONITOR_INTERVAL}s | Scan: tiap {SCAN_INTERVAL}s")
+        log.info(f"  SL: Swing High/Low | TP: R:R 1:2 | BE: +0.5% | Trail: 0.8%")
         log.info("=" * 60)
 
         await self.load_products()
         await self.check_existing_positions()
 
-        cycle = 0
+        cycle      = 0
+        last_scan  = 0.0
+
         while True:
-            cycle += 1
-            log.info(f"\n{'='*45} Cycle #{cycle} {'='*45}")
+            now = time.time()
             try:
-                balance = await self.get_balance()
-                log.info(f"Balance: ${balance:.4f} USDT")
-
-                if balance < 1.0:
-                    log.warning(f"Balance < $1 (${balance:.4f}), waiting for deposit...")
-                    await asyncio.sleep(60)
-                    continue
-
-                log.info(f"  Posisi aktif: {len(self.positions)}/{MAX_POSITIONS}")
-
-                # Monitor semua posisi yang ada
+                # Monitor posisi setiap MONITOR_INTERVAL (15s) ─────────────────────
                 if self.positions:
                     await self.monitor_position()
 
-                # Coba entry selama masih ada slot kosong
-                if len(self.positions) < MAX_POSITIONS:
-                    await self.scan_and_entry(balance)
+                # Scan entry baru setiap SCAN_INTERVAL (60s) ────────────────────────
+                if now - last_scan >= SCAN_INTERVAL:
+                    cycle += 1
+                    log.info(f"\n{'='*45} Cycle #{cycle} {'='*45}")
+                    balance = await self.get_balance()
+                    log.info(f"Balance: ${balance:.4f} USDT")
+                    log.info(f"  Posisi aktif: {len(self.positions)}/{MAX_POSITIONS}")
+
+                    if balance < 1.0:
+                        log.warning(f"Balance < $1 (${balance:.4f}), waiting...")
+                    elif len(self.positions) < MAX_POSITIONS:
+                        await self.scan_and_entry(balance)
+
+                    last_scan = now
 
             except Exception as e:
-                log.error(f"Cycle error: {e}", exc_info=True)
+                log.error(f"Loop error: {e}", exc_info=True)
 
-            log.info(f"Sleeping {SCAN_INTERVAL}s...")
-            await asyncio.sleep(SCAN_INTERVAL)
+            await asyncio.sleep(MONITOR_INTERVAL)
 
     async def stop(self):
         self.news.stop()
@@ -804,3 +905,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+

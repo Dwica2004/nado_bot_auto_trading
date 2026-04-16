@@ -1,37 +1,47 @@
-#!/usr/bin/env python3
-# ABOUTME: Entry point for Nado scalping bot.
-# ABOUTME: Run with: python main.py
+# -*- coding: utf-8 -*-
+"""
+Nado Auto Trader — Entry Point
+Jalankan: python main.py
 
-import asyncio
-import signal
-import sys
+Bot akan:
+1. Scan semua coin di Nado DEX
+2. Entry berdasarkan RSI + EMA + Volume + News sentiment
+3. Manage posisi dengan trailing stop, TP1/TP2, early exit
+"""
+import sys, os, asyncio
+sys.stdout.reconfigure(encoding="utf-8")
 
-from bot import NadoScalpingBot
+LOCKFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
 
+def check_single_instance():
+    """Pastikan hanya satu instance bot yang bisa jalan."""
+    if os.path.exists(LOCKFILE):
+        with open(LOCKFILE, "r") as f:
+            old_pid = f.read().strip()
+        print(f"[ERROR] Bot sudah jalan! PID={old_pid}")
+        print(f"  Kalau tidak jalan, hapus file: {LOCKFILE}")
+        print("  Atau jalankan: del .bot.lock")
+        sys.exit(1)
 
-async def main():
-    bot = NadoScalpingBot()
+    # Tulis PID kita
+    with open(LOCKFILE, "w") as f:
+        f.write(str(os.getpid()))
 
-    # Graceful shutdown on Ctrl+C or SIGTERM
-    if sys.platform != "win32":
-        loop = asyncio.get_running_loop()
-        
-        def _shutdown(sig_name):
-            print(f"\n[!] {sig_name} received — shutting down gracefully …")
-            asyncio.create_task(bot.stop())
-            
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _shutdown, sig.name)
-            except NotImplementedError:
-                pass
+def cleanup_lock():
+    if os.path.exists(LOCKFILE):
+        os.remove(LOCKFILE)
 
-    try:
-        await bot.start()
-    except KeyboardInterrupt:
-        print("\n[!] Ctrl+C received — shutting down gracefully …")
-        await bot.stop()
-
+from bot_scanner import main
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    check_single_instance()
+    print("=" * 60)
+    print("  🤖 Nado Auto Trader — STARTED")
+    print(f"  PID: {os.getpid()}")
+    print("  Stop: Ctrl+C")
+    print("=" * 60)
+    try:
+        asyncio.run(main())
+    finally:
+        cleanup_lock()
+        print("Bot stopped. Lockfile removed.")

@@ -1,0 +1,69 @@
+{
+  "symbol": "BTC-PERP",
+  "total_candles": 1943,
+  "total_trades": 5,
+  "wins": 3,
+  "losses": 2,
+  "win_rate": "60.0%",
+  "total_pnl": 80.3194,
+  "avg_win": 41.3329,
+  "avg_loss": -21.8396,
+  "max_win": 42.3987,
+  "max_loss": -22.0473,
+  "profit_factor": 2.84,
+  "max_drawdown": "2.00%",
+  "final_balance": 1080.32,
+  "return_pct": "8.03%",
+  "trades": [
+    {
+      "entry_time": "2026-04-09 15:15:00+00:00",
+      "exit_time": "2026-04-11 18:35:00+00:00",
+      "side": "LONG",
+      "entry": 71395.8046875,
+      "exit": 73537.678828125,
+      "pnl": 40.0,
+      "reason": "TAKE_PROFIT",
+      "sentiment": "positive"
+    },
+    {
+      "entry_time": "2026-04-11 23:10:00+00:00",
+      "exit_time": "2026-04-12 14:45:00+00:00",
+      "side": "SHORT",
+      "entry": 73035.640625,
+      "exit": 70844.57140625,
+      "pnl": 41.6,
+      "reason": "TAKE_PROFIT",
+      "sentiment": "negative"
+    },
+    {
+      "entry_time": "2026-04-12 22:25:00+00:00",
+      "exit_time": "2026-04-13 14:15:00+00:00",
+      "side": "SHORT",
+      "entry": 70631.9921875,
+      "exit": 71691.47207031249,
+      "pnl": -21.632,
+      "reason": "STOP_LOSS",
+      "sentiment": "negative"
+    },
+    {
+      "entry_time": "2026-04-13 19:35:00+00:00",
+      "exit_time": "2026-04-14 13:45:00+00:00",
+      "side": "LONG",
+      "entry": 73080.5390625,
+      "exit": 75272.955234375,
+      "pnl": 42.3987,
+      "reason": "TAKE_PROFIT",
+      "sentiment": "positive"
+    },
+    {
+      "entry_time": "2026-04-14 13:55:00+00:00",
+      "exit_time": "2026-04-14 17:35:00+00:00",
+      "side": "LONG",
+      "entry": 75490.3984375,
+      "exit": 74358.0424609375,
+      "pnl": -22.0473,
+      "reason": "STOP_LOSS",
+      "sentiment": "positive"
+    }
+  ]
+}

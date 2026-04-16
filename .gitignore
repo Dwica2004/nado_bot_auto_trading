@@ -2,3 +2,8 @@
 .env.example
 __pycache__/
 *.log
+*.log.bak
+.bot.lock
+*.whl
+vertex_src/
+trades.log

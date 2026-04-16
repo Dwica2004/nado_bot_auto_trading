@@ -1,0 +1,86 @@
+{
+    "network": {
+        "use_testnet": false,
+        "endpoints": {
+        "gateway_testnet": "https://gateway.test.nado.xyz/v1",
+            "gateway_mainnet": "https://gateway.prod.nado.xyz/v1",
+            "ws_testnet": "wss://gateway.test.nado.xyz/v1/ws",
+            "ws_mainnet": "wss://gateway.prod.nado.xyz/v1/ws"
+        },
+        "chain_id_testnet": 763373,
+        "chain_id_mainnet": 57073
+    },
+
+    "wallet": {
+        "private_key_env": "PRIVATE_KEY",
+        "wallet_address_env": "WALLET_ADDRESS",
+        "subaccount_name": "default"
+    },
+
+    "trading": {
+        "product_symbols": ["BTC-PERP", "ETH-PERP", "SOL-PERP"],
+        "blacklist": ["MSFT", "AMZN", "AAPL", "TSLA", "NVDA", "GOOGL", "SPY", "QQQ"],
+        "loop_interval_seconds": 7,
+        "cooldown_after_trade_seconds": 120,
+        "max_active_trades": 1
+    },
+
+    "strategy": {
+        "candle_count": 60,
+        "breakout_lookback": 20,
+        "volume_spike_multiplier": 1.8,
+        "sentiment_weight": true,
+        "rsi_oversold": 38.0,
+        "rsi_overbought": 62.0,
+        "ema_fast": 9,
+        "ema_slow": 21,
+        "min_entry_score": 1,
+        "min_risk_reward": 1.0
+    },
+
+    "risk": {
+        "risk_per_trade_pct": 0.01,
+        "stop_loss_pct": 0.012,
+        "take_profit_pct": 0.024,
+        "max_open_trades": 1,
+        "min_balance_usdt": 0.5,
+        "atr_sl_multiplier": 1.5,
+        "atr_tp_multiplier": 3.0
+    },
+
+    "news": {
+        "rss_feeds": [
+            "https://cointelegraph.com/rss",
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://decrypt.co/feed",
+            "https://bitcoinmagazine.com/.rss/full/"
+        ],
+        "twitter_keywords": ["BTC", "ETH", "crypto", "listing", "partnership", "bitcoin", "ethereum"],
+        "scrape_interval_seconds": 45,
+        "positive_keywords": [
+            "bullish", "breakout", "listing", "partnership", "launch",
+            "rally", "surge", "pump", "moon", "adoption", "approved",
+            "institutional", "upgrade", "all-time high", "ath", "buy",
+            "accumulate", "etf", "green", "recover", "soar"
+        ],
+        "negative_keywords": [
+            "hack", "exploit", "dump", "bearish", "selloff",
+            "crash", "scam", "fraud", "liquidation", "ban",
+            "crackdown", "decline", "plunge", "red", "fear",
+            "rug", "vulnerability", "breach", "sec", "lawsuit"
+        ]
+    },
+
+    "logging": {
+        "log_level": "INFO",
+        "log_file": "nado_auto_trader.log",
+        "trade_log_file": "trades.log"
+    },
+
+    "backtest": {
+        "enabled": false,
+        "start_date": "2025-01-01",
+        "end_date": "2025-12-31",
+        "initial_balance": 1000.0
+    }
+}

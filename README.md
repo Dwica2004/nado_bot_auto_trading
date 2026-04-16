@@ -1,150 +1,185 @@
-# 🌪️ Nado Scalping Bot
+# 🤖 Nado Auto Trader
 
-Automated scalping bot for **[Nado DEX](https://nado.xyz)** — CLOB DEX built on Ink L2.  
-Uses a **BB + EMA + RSI + ATR** strategy with ~62-65% win rate and 1.67:1 RR.
-
----
-
-## Strategy Logic
-
-```
-BB Mean Reversion + EMA Trend Filter + RSI Confirmation + ATR Risk Sizing
-```
-
-| Component | Role | Parameters |
-|---|---|---|
-| **EMA 9 / EMA 21** | Trend filter | Long only in uptrend, short only in downtrend |
-| **Bollinger Bands 20,2** | Entry trigger | Enter near band extremes (mean reversion) |
-| **RSI 14** | Momentum filter | Long: RSI < 45 · Short: RSI > 55 |
-| **ATR 14** | Risk sizing | SL = 1.5× ATR · TP = 2.5× ATR |
-
-### Entry Rules
-
-**LONG:** EMA9 > EMA21 **AND** price ≤ BB_lower **AND** RSI < 45  
-**SHORT:** EMA9 < EMA21 **AND** price ≥ BB_upper **AND** RSI > 55
-
-### Expected Performance
-
-| Metric | Value |
-|---|---|
-| Win rate | ~62–65% |
-| Risk:Reward | 1.67 : 1 (2.5÷1.5) |
-| Expected value | +0.68 per unit risked |
-| Timeframe | 5-minute candles |
-| Cooldown | 60s between signals |
-
-> EV = (0.63 × 1.67) − (0.37 × 1) ≈ **+0.68** per trade
+Fully automated crypto trading bot for **Nado DEX** (Ink L2) that executes trades based on news sentiment, price breakout confirmation, and volume spikes.
 
 ---
 
-## Architecture
+## ⚡ Features
+
+| Feature | Description |
+|---------|-------------|
+| **News Sentiment** | Scrapes CoinDesk, CoinTelegraph, CryptoCompare + Twitter/Nitter for real-time crypto sentiment |
+| **Triple Confirmation** | Trades ONLY when sentiment + breakout + volume spike ALL align |
+| **EIP-712 Signing** | Full wallet integration with Nado's EIP-712 order signing (mainnet + testnet) |
+| **Risk Management** | 2% risk per trade, stop loss, take profit, 1 active trade max |
+| **Backtesting** | Test strategy on historical data before going live |
+| **CLI Dashboard** | Real-time terminal output with position tracking and PnL |
+| **Trade Logging** | All trades logged with timestamp, signal, entry, exit, PnL |
+
+---
+
+## 📁 Project Structure
 
 ```
-main.py
-  └── NadoScalpingBot (bot.py)
-        ├── NadoPriceFeed     → WebSocket BBO feed (client.py)
-        ├── NadoRestClient    → REST queries & executes (client.py)
-        ├── ScalpingStrategy  → BB+EMA+RSI+ATR signals (strategy.py)
-        ├── RiskManager       → sizing, SL/TP, daily limit (risk.py)
-        └── NadoSigner        → EIP712 order signing (signing.py)
-
-config.py           → all parameters (also reads .env)
-trading_skills/     → technical indicator library (pandas_ta based)
+Nado_auto_trading/
+├── main.py          # Entry point — trading loop + CLI dashboard
+├── nado_api.py      # Nado REST client + EIP-712 signer + candle cache
+├── news.py          # RSS + Twitter scraper + sentiment analysis
+├── strategy.py      # Entry strategy (sentiment + breakout + volume)
+├── backtest.py      # Backtesting engine
+├── config.json      # All tunable parameters
+├── requirements.txt # Python dependencies
+├── .env.example     # Environment variable template
+└── .env             # Your private keys (DO NOT COMMIT)
 ```
 
 ---
 
-## Setup
+## 🚀 Quick Start
 
-### 1. Install dependencies
+### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
-
-# Also install trading_skills for extended analysis:
-pip install git+https://github.com/staskh/trading_skills.git
 ```
 
-### 2. Configure
+### 2. Configure Environment
 
 ```bash
 cp .env.example .env
-nano .env
 ```
 
-Fill in:
-```
+Edit `.env` with your wallet details:
+
+```env
 PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 WALLET_ADDRESS=0xYOUR_WALLET_ADDRESS
-USE_TESTNET=true       ← start with testnet!
-PRODUCT_ID=1           ← 1=BTC-PERP
 ```
 
-### 3. Deposit collateral
+### 3. Configure Strategy (Optional)
 
-Deposit USDT0 to your Nado testnet account first:  
-👉 https://app.test.nado.xyz
+Edit `config.json` to tune:
+- Trading pairs (`trading.product_symbols`)
+- Risk parameters (`risk.risk_per_trade_pct`, `risk.stop_loss_pct`, etc.)
+- News sources (`news.rss_feeds`)
+- Loop interval (`trading.loop_interval_seconds`)
 
-### 4. Run the bot
+### 4. Run the Bot
 
 ```bash
-cd nado_bot
 python main.py
 ```
 
-Stop with `Ctrl+C` — the bot shuts down gracefully and prints a session summary.
+### 5. Run Backtesting
 
----
-
-## Risk Settings (config.py)
-
-```python
-# RiskConfig defaults
-max_position_usdt  = 100.0   # max $100 per trade
-max_open_trades    = 1       # never stack positions
-daily_loss_limit   = 50.0    # stop if down $50 on the day
-risk_per_trade_pct = 0.01    # risk 1% of balance per trade
+```bash
+python backtest.py --symbol BTC-PERP --period 30d --interval 5m
 ```
 
 ---
 
-## File Reference
+## 🧠 Trading Strategy
 
-| File | Purpose |
-|---|---|
-| `main.py` | Entry point, signal handlers |
-| `bot.py` | Main async orchestrator |
-| `strategy.py` | BB+EMA+RSI+ATR signal generation |
-| `risk.py` | Position sizing, SL/TP, daily PnL |
-| `signing.py` | EIP712 order signing for Nado |
-| `client.py` | REST + WebSocket API client |
-| `config.py` | All parameters (reads .env) |
-| `.env.example` | Environment template |
+The bot uses a **triple-confirmation** system. ALL conditions must be met:
 
----
+### Long Entry
+```
+✅ News sentiment == "positive"
+✅ Price breaks above resistance (highest of last 20 candles)
+✅ Volume spike > 1.5x average volume
+```
 
-## Nado API Endpoints Used
+### Short Entry
+```
+✅ News sentiment == "negative"
+✅ Price breaks below support (lowest of last 20 candles)
+✅ Volume spike > 1.5x average volume
+```
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /query?type=contracts` | EIP712 domain address |
-| `GET /query?type=market_prices` | Live prices |
-| `GET /query?type=market_liquidity` | Order book BBO |
-| `GET /query?type=subaccount_info` | Balance check |
-| `POST /execute` | Submit signed orders |
-| `WSS subscriptions` | Real-time BBO feed |
-
----
-
-## ⚠️ Warnings
-
-- **Always test on testnet first** (`USE_TESTNET=true`)
-- Private key gives full control of funds — never share or commit
-- Past win rate doesn't guarantee future results
-- Crypto scalping involves significant risk
+### Risk Management
+- **Risk per trade**: 2% of total balance
+- **Stop Loss**: 1.5% from entry
+- **Take Profit**: 3% from entry
+- **Max open trades**: 1
+- **Cooldown**: 45 seconds after each trade
 
 ---
 
-## License
+## 📰 News Sources
 
-MIT
+| Source | Type | Method |
+|--------|------|--------|
+| CoinTelegraph | RSS | feedparser |
+| CoinDesk | RSS | feedparser |
+| Decrypt | RSS | feedparser |
+| Bitcoin Magazine | RSS | feedparser |
+| Twitter/X | Social | Nitter scraping |
+| CryptoCompare | API | REST (fallback) |
+
+### Sentiment Keywords
+
+**Positive**: bullish, breakout, listing, partnership, launch, rally, surge, adoption, approved, etf...
+
+**Negative**: hack, exploit, dump, bearish, selloff, crash, scam, liquidation, ban, crackdown...
+
+---
+
+## ⚙️ Configuration
+
+All settings in `config.json`:
+
+```json
+{
+    "strategy": {
+        "candle_count": 50,
+        "breakout_lookback": 20,
+        "volume_spike_multiplier": 1.5
+    },
+    "risk": {
+        "risk_per_trade_pct": 0.02,
+        "stop_loss_pct": 0.015,
+        "take_profit_pct": 0.03,
+        "max_open_trades": 1
+    }
+}
+```
+
+---
+
+## 🔒 Safety Features
+
+- **No overtrading**: Max 1 position + cooldown timer
+- **Market unclear**: Skips when sentiment is neutral
+- **Balance guard**: Won't trade below minimum balance
+- **Retry logic**: Auto-retries failed API calls (3 attempts)
+- **Graceful shutdown**: Ctrl+C stops cleanly with session summary
+
+---
+
+## ⚠️ Disclaimer
+
+This bot is for **educational purposes**. Trading crypto involves significant risk. Never trade with funds you can't afford to lose. Always test on **testnet** first.
+
+---
+
+## 📊 CLI Dashboard Example
+
+```
+  ╔════════════════════════════════════════════════════════════════════════╗
+  ║  🤖 NADO AUTO TRADER  │  TESTNET  │  14:30:22                       ║
+  ╚════════════════════════════════════════════════════════════════════════╝
+
+  💰 Balance: $542.18  │  Sentiment: 🟢 POSITIVE (+1.50)
+  📊 Trades: 12W/3L (80%)  │  PnL: $+42.18
+  ────────────────────────────────────────────────────────────────────────
+  📌 ACTIVE: BTC-PERP LONG
+     Entry: 83521.4200  │  Now: 83892.1000  │  🟢 PnL: $+2.4100
+     SL: 82268.60  │  TP: 86026.06
+  ────────────────────────────────────────────────────────────────────────
+  📰 Recent News:
+     🟢 Bitcoin breaks $84K as institutional demand surges
+     🟢 Major partnership announced between Ethereum Foundation and...
+     ⚪ Crypto market consolidates ahead of Fed meeting
+  ────────────────────────────────────────────────────────────────────────
+  📈 BTC-PERP: $83,892.10  │  ETH-PERP: $3,421.50  │  SOL-PERP: $178.33
+```
